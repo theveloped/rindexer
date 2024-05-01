@@ -1,0 +1,222 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Bitcoin Ordinal Operations</title>
+</head>
+<body>
+    <h1>Bitcoin Ordinal Operations</h1>
+    <button id="fetchData">Fetch Ordinal Data</button>
+    <script>
+        let inscription_id = window.location.pathname.split("/").pop();
+        console.log("inscription_id: " + inscription_id)
+
+        let address = ""
+
+
+        // Making the API call to fetch inscription data
+        fetch(`https://ordinals.com/r/inscription/${inscription_id}`)
+        .then(response => response.json())
+        .then(inscription => {
+            console.log("Fetched Inscription Data:", inscription);
+            // let inscription = data.json()
+            
+            let sat = inscription.sat;
+            let height = inscription.height;
+            let output = inscription.output;
+            address = inscription.address;
+            console.log(sat, height, address)
+
+            // // Extracting and displaying SAT ID
+            // const satId = inscription.sat;
+            // document.getElementById('satId').textContent = satId;
+
+            // // Extracting and displaying Transaction ID
+            // const transactionOutput = data.output;
+            // const transactionId = transactionOutput.split(':')[0];
+            // document.getElementById('transactionId').textContent = transactionId;
+
+            // // Displaying Transaction Output
+            // document.getElementById('transactionOutput').textContent = transactionOutput;
+            return inscription
+        })
+        // .then(inscription => fetch(`https://ordinals.com/output/${inscription.output}`))
+        // .then(response => response.json())
+        // .then(response => {
+        //     console.log(response)
+        // })
+        .catch(error => {
+            console.error("Error fetching data:", error);
+        });
+
+    
+        document.getElementById('fetchData').addEventListener('click', function() {
+            // Fetching the latest block height
+            fetch(`https://ordinals.com/r/blockheight`)
+            .then(response => response.text())
+            .then(blockHeight => {
+                console.log("Latest Block Height:", blockHeight.trim());
+                // Use this block height to fetch more detailed info
+                fetchBlockInfo(blockHeight.trim());
+            })
+            .catch(error => console.error("Error fetching block height:", error));
+        });
+
+        function find_utxo_address(li) {
+            const dts = li.querySelectorAll('dt');
+
+            // Iterate over each <dt> to find the one that contains the text "address"
+            for (let dt of dts) {
+                if (dt.textContent.trim().toLowerCase() === 'address') {
+                    // If a <dt> with "address" is found, get the next sibling element, which should be the <dd> containing the address
+                    const dd = dt.nextElementSibling;
+                    if (dd && dd.tagName === 'DD') {
+                        return dd.textContent.trim(); // Return the content of <dd>
+                    }
+                }
+            }
+
+            return null; // Return null if no matching <dt> or <dd> is found
+        }
+
+        function find_utxo_balances(doc) {
+            let balances = {}
+            const dts = doc.querySelectorAll('dt');
+
+            // Iterate over each <dt> to find the one that contains the text "spent"
+            for (let dt of dts) {
+                if (dt.textContent.trim().toLowerCase() === 'runes') {
+                    // If a <dt> with "spent" is found, get the next sibling element, which should be the <dd> containing the boolean value
+                    const dd = dt.nextElementSibling;
+                    if (dd && dd.tagName === 'DD') {
+
+                        const links = Array.from(dd.querySelectorAll('a[href^="/rune/"]'))
+
+                        for (let index = 0; index < links.length; index++) {
+                            let td = links[index].parentNode;
+                            let balance_td = td.nextElementSibling;
+                            let rune = decodeURIComponent(links[index].href.split("/rune/").pop());
+
+                            if (balance_td && td.tagName === 'TD') {
+                                let balance = balance_td.textContent.split('\u00A0')[0];
+                                balances[rune] = Number(balance);
+                            }
+                        }
+                    }
+                }
+            }
+
+            return balances;
+        }
+
+        async function find_utxo_spent(doc) {
+            const dts = doc.querySelectorAll('dt');
+
+            // Iterate over each <dt> to find the one that contains the text "spent"
+            for (let dt of dts) {
+                if (dt.textContent.trim().toLowerCase() === 'spent') {
+                    // If a <dt> with "spent" is found, get the next sibling element, which should be the <dd> containing the boolean value
+                    const dd = dt.nextElementSibling;
+                    if (dd && dd.tagName === 'DD') {
+                        // Convert the text content to boolean (assuming 'true' or 'false' as strings)
+                        const spent = dd.textContent.trim().toLowerCase() === 'true'; // Convert string to boolean
+                        return spent
+                    }
+                }
+            }
+
+            return null; // Return null if no matching <dt> or <dd> is found
+        }
+
+        function checkUtxo(utxo) {
+            return fetch(`https://ordinals.com/output/${utxo}`)
+            .then(response => response.text())
+            .then(async html => {
+                const parser = new DOMParser();
+                const doc = parser.parseFromString(html, "text/html");
+                const utxo_spent = await find_utxo_spent(doc)
+
+                if (!utxo_spent) {
+                    const utxo_balances = await find_utxo_balances(doc)
+                    return utxo_balances
+                }
+                return {}
+            })
+            // .then(doc => find_utxo_spent(doc))
+            .catch(error => console.error("Error fetching utxo info:", error));
+        }
+
+        function mergeAndSum(object1, object2) {
+            // Iterate over all keys in object2
+            for (const key in object2) {
+                if (object2.hasOwnProperty(key)) {  // Check if the key is directly on object2 (not inherited)
+                    if (object1.hasOwnProperty(key)) {
+                        // If the key exists in object1, sum the values
+                        object1[key] += object2[key];
+                    } else {
+                        // If the key does not exist, add it to object1
+                        object1[key] = object2[key];
+                    }
+                }
+            }
+            return object1;
+        }
+
+        function checkTx(tx, check_address) {
+            return fetch(`https://ordinals.com/tx/${tx}`)
+            .then(response => response.text())
+            .then(async html => {
+                let balances = {}
+                const parser = new DOMParser();
+                const doc = parser.parseFromString(html, "text/html");
+                const links = Array.from(doc.querySelectorAll('a[href^="/output/"]'))
+
+                for (let index = 0; index < links.length; index++) {
+                    let li = links[index].parentNode;
+                    let utxo = links[index].href.split("/output/").pop();
+                    let utxo_address = find_utxo_address(li);
+
+                    if (utxo_address != null) {
+                        if (check_address == utxo_address) {
+                            const utxo_balances = await checkUtxo(utxo)      
+                            balances = mergeAndSum(balances, utxo_balances)
+                        }
+                    }
+                }
+
+                return balances
+            })
+            .catch(error => console.error("Error fetching tx info:", error));
+        }
+
+        function sleep(ms) {
+            return new Promise(resolve => setTimeout(resolve, ms));
+        }
+
+        function fetchBlockInfo(blockHeight) {
+            fetch(`https://ordinals.com/block/${blockHeight}`)
+            .then(response => response.text())
+            .then(async html => {
+                const parser = new DOMParser();
+                const doc = parser.parseFromString(html, "text/html");
+                const txLinks = Array.from(doc.querySelectorAll('a[href^="/tx/"]')).map(a => a.href);
+                const runeLinks = Array.from(doc.querySelectorAll('a[href^="/rune/"]')).map(a => a.href);
+                let balances = {}
+
+                for (let index = 0; index < txLinks.length; index++) {
+                    const tx = txLinks[index].split("/tx/").pop();
+                    const block_balances = await checkTx(tx, "bc1qq0rvgjcq2a60drfmtg06wnnw9djx9j7c49496c")
+                    balances = mergeAndSum(balances, block_balances)
+                            
+                    await sleep(1);
+                    // break
+                }
+                
+                console.log("Block balances: ", balances);
+            })
+            .catch(error => console.error("Error fetching block info:", error));
+        }
+    </script>
+</body>
+</html>
